@@ -179,69 +179,108 @@ function doPost(e) {
   const callbackQuery = data.callback_query;
 
   if (message) {
-    const chatId = message.chat.id;
-    const text = message.text;
-
-    if (text === '/start') {
-      handleStart(chatId);
-    } else if (text === '/check') {
-      checkGroupMembership(chatId); // Обработка команды /check
-    } else if (text === '/promo') {
-      // Активируем режим для ввода текста после команды /promo
-      setPromoActive(chatId);
-      sendText(chatId, "Пожалуйста, отправьте промокод");
-    } else if (message.contact) {
-      // Передаем контакт в processContactMessage
-      processContactMessage(chatId, message.contact);
-    } else if (text === '/help') {
-      sendText(chatId, "Для участия в розыгрыше нужно: Зарегистрироваться в боте, подписаться на группу,отправить ваш промокод.");
-    } else {
-      // Если не команда /promo, проверяем, не был ли отправлен текст после /promo
-      const promoActive = isPromoActive(chatId); // Проверяем, активен ли режим для chat ID
-      if (promoActive) {
-        savePromoText(chatId, text); // Сохраняем текст
-        setPromoInactive(chatId); // Деактивируем режим
-        sendText(chatId, "Ваш промокод сохранён.");
-      } else {
-        sendText(chatId, 'Извините, я не понимаю эту команду.');
-      }
-    }
+    handleMessage(message);
   } else if (callbackQuery) {
-    handleCallbackQuery(callbackQuery); // Используем handleCallbackQuery для обработки callbackQuery
+    handleCallbackQuery(callbackQuery);
   }
 }
-// Функция для сохранения текста в Google Sheets
+
+function handleMessage(message) {
+  const chatId = message.chat.id;
+  const text = message.text;
+
+  // Проверяем, является ли это промокодом
+  if (isWaitingForPromo(chatId)) {
+    savePromoText(chatId, text);
+    return;
+  }
+
+  // Обработка команд
+  if (text === '/start') {
+    handleStart(chatId);
+  } else if (text === '/check') {
+    promptGroupCheck(chatId);
+  } else if (text === '/help') {
+    sendText(
+      chatId,
+      "Для участия в розыгрыше нужно: Зарегистрироваться в боте, подписаться на группу, отправить ваш промокод."
+    );
+  } else if (message.contact) {
+    processContactMessage(chatId, message.contact);
+  } else {
+    sendText(chatId, 'Извините, я не понимаю эту команду.');
+  }
+}
+
+function handleCallbackQuery(callbackQuery) {
+  const chatId = callbackQuery.from.id;
+  const callbackData = callbackQuery.data;
+
+  if (callbackData === "promo") {
+    // Пользователь выбрал "Ввести промокод"
+    sendText(chatId, "Введите ваш промокод:");
+    markUserAsWaitingForPromo(chatId);
+    promptGroupCheck(chatId);
+  } else if (callbackData === "check_group") {
+    // Проверяем, вступил ли пользователь в группу
+    const isJoined = checkIfUserJoined(chatId);
+    if (isJoined) {
+      sendText(chatId, "Поздравляем, теперь вы участвуете в новогоднем розыгрыше, подробная информация на канале в нашем ТГ!");
+    } else {
+      sendText(chatId, "Вы еще не вступили в группу. Пожалуйста, вступите в группу, чтобы продолжить.");
+    }
+  }
+}
+
+// Отмечаем, что пользователь ожидает ввода промокода
+function markUserAsWaitingForPromo(chatId) {
+  const cache = CacheService.getScriptCache();
+  cache.put(String(chatId), "waiting_for_promo", 100); // Сохраняем состояние на 5 минут
+}
+
+// Проверяем, ожидает ли пользователь ввода промокода
+function isWaitingForPromo(chatId) {
+  const cache = CacheService.getScriptCache();
+  return cache.get(String(chatId)) === "waiting_for_promo";
+}
+
+// Сохранение промокода в таблице
 function savePromoText(chatId, text) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Клиенты");
   const data = sheet.getDataRange().getValues();
 
   // Ищем строку с chat ID в 3-м столбце
-  const row = data.findIndex(row => row[2] == chatId); // 2-й индекс для 3-го столбца
+  const rowIndex = data.findIndex(row => row[2] == chatId);
 
-  if (row === -1) {
-    // Если chat ID не найден, возвращаем сообщение и прекращаем выполнение
+  if (rowIndex === -1) {
     Logger.log('Chat ID не найден в листе Клиенты');
+    sendText(chatId, "Ваш чат ID не найден. Пожалуйста, зарегистрируйтесь.");
     return;
   }
 
-  // Сохраняем текст в 4-й колонке (индекс 3)
-  sheet.getRange(row + 1, 4).setValue(text); // row + 1, так как строки в Google Sheets начинаются с 1
+  // Сохраняем текст в 4-й колонке
+  sheet.getRange(rowIndex + 1, 4).setValue(text); // rowIndex + 1 для корректной индексации Google Sheets
+
+  // Удаляем состояние пользователя
+  clearUserState(chatId);
+
+  // Подтверждаем успешное сохранение
+  sendText(chatId, "Ваш промокод успешно сохранен!");
 }
 
-// Проверка, активен ли режим promo для chat ID
-function isPromoActive(chatId) {
-  const cache = CacheService.getUserCache();
-  return cache.get(`promo_${chatId}`) === "active";
+// Сброс состояния пользователя
+function clearUserState(chatId) {
+  const cache = CacheService.getScriptCache();
+  cache.remove(String(chatId));
 }
 
-// Активация режима promo
-function setPromoActive(chatId) {
-  const cache = CacheService.getUserCache();
-  cache.put(`promo_${chatId}`, "active", 300); // Устанавливаем на 5 минут
-}
+// Отправляем отдельную кнопку для проверки участия в группе
+function promptGroupCheck(chatId) {
+  const keyboard = {
+    inline_keyboard: [
+      [{ text: "Я вступил в группу", callback_data: "check_group" }]
+    ]
+  };
 
-// Деактивация режима promo
-function setPromoInactive(chatId) {
-  const cache = CacheService.getUserCache();
-  cache.remove(`promo_${chatId}`);
+  sendText(chatId, "Нажмите кнопку ниже, когда вступите в группу.", keyboard);
 }
