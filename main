@@ -1,0 +1,247 @@
+const TOKEN = ''
+const spreadsheet = SpreadsheetApp.openById('');
+const CLIENTS_SHEET_NAME = 'Клиенты'
+
+function setWebhook() {
+  const url = ''; // Вставьте URL вашего GAS-скрипта
+  const response = UrlFetchApp.fetch(`https://api.telegram.org/bot${TOKEN}/setWebhook?url=${url}`);
+  Logger.log(response.getContentText()); // Логируем результат установки вебхука
+}
+
+function sendText(chatId, text, keyboard = null) {
+  const url = `https://api.telegram.org/bot${TOKEN}/sendMessage`;
+
+  // Формируем payload
+  const payload = {
+    chat_id: chatId,
+    text: text,
+    parse_mode: "Markdown", // Или "HTML", если хотите использовать другой формат
+  };
+
+  // Добавляем клавиатуру, если она передана
+  if (keyboard) {
+    payload.reply_markup = JSON.stringify(keyboard);
+  }
+
+  // Параметры запроса
+  const params = {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+  };
+
+  // Выполняем запрос
+  UrlFetchApp.fetch(url, params);
+}
+
+function sendInlineKeyboard(chatId, text, buttons) {
+  const url = `https://api.telegram.org/bot${TOKEN}/sendMessage`;
+
+  const payload = {
+    chat_id: chatId,
+    text: text,
+    reply_markup: JSON.stringify({
+      inline_keyboard: buttons
+    })
+  };
+
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload)
+  };
+
+  UrlFetchApp.fetch(url, options);
+}
+
+function hideInlineKeyboard(chatId, messageId) {
+ const url = `https://api.telegram.org/bot${TOKEN}/editMessageReplyMarkup`;
+  const payload = {
+    chat_id: chatId,
+    message_id: messageId,
+    reply_markup: JSON.stringify({ inline_keyboard: [] }) // Скрытие клавиатуры
+  };
+  const options = {
+   method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload)
+ };
+  UrlFetchApp.fetch(url, options);
+}
+
+function handleStart(chatId) {
+  const client = getClientByChatId(chatId);
+  if (client) {
+    sendText(chatId, 'Вы уже зарегистрированы в системе.');
+  } else {
+    sendText(chatId, 'Для регистрации, нажмите кнопку ниже, чтобы поделиться контактом.');
+    requestContact(chatId);
+  }
+}
+
+function requestContact(chatId) {
+  const keyboard = {
+    keyboard: [[{ text: 'Отправить контакт', request_contact: true }]],
+    resize_keyboard: true,
+    one_time_keyboard: true,
+  };
+
+  sendText(chatId, 'Пожалуйста, отправьте свой контакт.', keyboard);
+}
+
+function processContactMessage(chatId, contact) {
+  const client = getClientByChatId(chatId);
+  if (client) {
+    sendText(chatId, 'Вы уже зарегистрированы в системе.');
+  } else {
+    const phone = contact.phone_number;
+    const name = contact.first_name || 'Пользователь';
+    registerClient(chatId, phone, name);
+  }
+}
+
+function registerClient(chatId, phone, name) {
+  const sheet = spreadsheet.getSheetByName(CLIENTS_SHEET_NAME);
+  sheet.appendRow([name, phone, chatId]);
+  sendText(chatId, `Спасибо, ${name}! Вы успешно зарегистрированы.`);
+
+  // Отправляем кнопку для вступления в группу
+  sendJoinGroupButton(chatId);
+}
+
+function sendJoinGroupButton(chatId) {
+  const groupUrl = ""; // Ссылка на вашу группу
+  const keyboard = {
+    inline_keyboard: [[{ text: "Вступить в группу", url: groupUrl }]]
+  };
+
+  sendText(chatId, "Пожалуйста, вступите в нашу группу, чтобы продолжить участие.", keyboard);
+  
+  // Задержка в 15 секунд (15000 миллисекунд)
+  Utilities.sleep(15000);
+
+  // Проверяем, вступил ли пользователь в группу
+  const isJoined = checkIfUserJoined(chatId);
+  if (isJoined) {
+    sendText(chatId, "Поздравляем, теперь вы участвуете в новогоднем розыгрыше, подробная информация на канале в нашем ТГ!");
+  } else {
+    sendText(chatId, "Вы еще не вступили в группу. Пожалуйста, вступите в группу, чтобы продолжить.");
+  }
+}
+
+function getClientByChatId(chatId) {
+  try {
+    const sheet = spreadsheet.getSheetByName(CLIENTS_SHEET_NAME);
+    if (!sheet) {
+      throw new Error(`Лист "${CLIENTS_SHEET_NAME}" не найден.`);
+    }
+    const data = sheet.getDataRange().getValues();
+    return data.find(row => row[2] == chatId) || null;
+  } catch (e) {
+    Logger.log(`Ошибка в getClientByChatId: ${e.message}`);
+    return null;
+  }
+}
+function checkIfUserJoined(chatId) {
+  const groupId = '@strim_krepirk';  // Замените на ваш username группы (например, @strim_krepirk)
+  const url = `https://api.telegram.org/bot${TOKEN}/getChatMember?chat_id=${groupId}&user_id=${chatId}`;
+  
+  // Отправляем запрос к API Telegram
+  const response = UrlFetchApp.fetch(url);
+  const result = JSON.parse(response.getContentText());
+  
+  if (result.ok) {
+    const status = result.result.status; // Статус пользователя в группе
+    if (status === 'member' || status === 'administrator' || status === 'creator') {
+      return true; // Пользователь в группе
+    } else {
+      return false; // Пользователь не в группе
+    }
+  } else {
+    Logger.log('Ошибка при проверке статуса пользователя: ' + result.description);
+    return false;
+  }
+}
+function checkGroupMembership(chatId) {
+  // Проверяем, состоит ли пользователь в группе
+  const isJoined = checkIfUserJoined(chatId);
+
+  if (isJoined) {
+    sendText(chatId, "Вы состоите в нашей группе. Спасибо за участие в розыгрыше!");
+  } else {
+    sendText(chatId, "Вы еще не вступили в группу. Пожалуйста, вступите в группу, чтобы продолжить.");
+  }
+}
+
+function doPost(e) {
+  const data = JSON.parse(e.postData.contents);
+  const message = data.message;
+  const callbackQuery = data.callback_query;
+
+  if (message) {
+    const chatId = message.chat.id;
+    const text = message.text;
+
+    if (text === '/start') {
+      handleStart(chatId);
+    } else if (text === '/check') {
+      checkGroupMembership(chatId); // Обработка команды /check
+    } else if (text === '/promo') {
+      // Активируем режим для ввода текста после команды /promo
+      setPromoActive(chatId);
+      sendText(chatId, "Пожалуйста, отправьте промокод");
+    } else if (message.contact) {
+      // Передаем контакт в processContactMessage
+      processContactMessage(chatId, message.contact);
+    } else if (text === '/help') {
+      sendText(chatId, "Для участия в розыгрыше нужно: Зарегистрироваться в боте, подписаться на группу,отправить ваш промокод.");
+    } else {
+      // Если не команда /promo, проверяем, не был ли отправлен текст после /promo
+      const promoActive = isPromoActive(chatId); // Проверяем, активен ли режим для chat ID
+      if (promoActive) {
+        savePromoText(chatId, text); // Сохраняем текст
+        setPromoInactive(chatId); // Деактивируем режим
+        sendText(chatId, "Ваш промокод сохранён.");
+      } else {
+        sendText(chatId, 'Извините, я не понимаю эту команду.');
+      }
+    }
+  } else if (callbackQuery) {
+    handleCallbackQuery(callbackQuery); // Используем handleCallbackQuery для обработки callbackQuery
+  }
+}
+// Функция для сохранения текста в Google Sheets
+function savePromoText(chatId, text) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Клиенты");
+  const data = sheet.getDataRange().getValues();
+
+  // Ищем строку с chat ID в 3-м столбце
+  const row = data.findIndex(row => row[2] == chatId); // 2-й индекс для 3-го столбца
+
+  if (row === -1) {
+    // Если chat ID не найден, возвращаем сообщение и прекращаем выполнение
+    Logger.log('Chat ID не найден в листе Клиенты');
+    return;
+  }
+
+  // Сохраняем текст в 4-й колонке (индекс 3)
+  sheet.getRange(row + 1, 4).setValue(text); // row + 1, так как строки в Google Sheets начинаются с 1
+}
+
+// Проверка, активен ли режим promo для chat ID
+function isPromoActive(chatId) {
+  const cache = CacheService.getUserCache();
+  return cache.get(`promo_${chatId}`) === "active";
+}
+
+// Активация режима promo
+function setPromoActive(chatId) {
+  const cache = CacheService.getUserCache();
+  cache.put(`promo_${chatId}`, "active", 300); // Устанавливаем на 5 минут
+}
+
+// Деактивация режима promo
+function setPromoInactive(chatId) {
+  const cache = CacheService.getUserCache();
+  cache.remove(`promo_${chatId}`);
+}
